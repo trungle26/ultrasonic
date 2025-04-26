@@ -1,4 +1,4 @@
-#include <Arduino.h>
+// #include <Arduino.h>
 // #include <Arduino_FreeRTOS.h>  // Include FreeRTOS for Arduino
 
 // const int trigPin = A0; // TRIG pin (using analog pin A0)
@@ -66,7 +66,7 @@
 // }
 
 
-
+#include <Arduino.h>
 #include <Arduino_FreeRTOS.h>
 #include <LiquidCrystal.h>
 
@@ -83,20 +83,12 @@ LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 volatile long distance = 0;
 
 // Task handles (optional)
-TaskHandle_t TaskMeasure, TaskDisplay;
+TaskHandle_t TaskMeasure, TaskDisplay, TaskWrite;
 
 
 // Task 1: Measure Distance
 void measureDistanceTask(void *pvParameters) {
   while (1) {
-    digitalWrite(trigPin, LOW);
-    vTaskDelay(2 / portTICK_PERIOD_MS);
-    digitalWrite(trigPin, HIGH);
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-    digitalWrite(trigPin, LOW);
-
-    long duration = pulseIn(echoPin, HIGH);
-    distance = (duration * 0.034) / 2;
 
     if (distance < 10) {
       digitalWrite(LED_BUILTIN, HIGH);
@@ -119,6 +111,22 @@ void displayDistanceTask(void *pvParameters) {
   }
 }
 
+// Task 3: Write Distance
+void writeDistanceTask(void *pvParameters) {
+  while (1) {
+    digitalWrite(trigPin, LOW);
+    vTaskDelay(2 / portTICK_PERIOD_MS);
+    digitalWrite(trigPin, HIGH);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    digitalWrite(trigPin, LOW);
+
+    long duration = pulseIn(echoPin, HIGH);
+    distance = (duration * 0.034) / 2 + 1; // sai so
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+  }
+}
+
 void setup() {
   // Init pins
   pinMode(trigPin, OUTPUT);
@@ -132,6 +140,7 @@ void setup() {
   // Create FreeRTOS tasks
   xTaskCreate(measureDistanceTask, "Measure", 128, NULL, 2, &TaskMeasure);
   xTaskCreate(displayDistanceTask, "Display", 128, NULL, 1, &TaskDisplay);
+  xTaskCreate(writeDistanceTask, "Write", 128, NULL, 1, &TaskWrite);
 
   vTaskStartScheduler();
 }
