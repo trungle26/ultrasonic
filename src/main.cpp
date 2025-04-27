@@ -1,152 +1,134 @@
-// #include <Arduino.h>
-// #include <Arduino_FreeRTOS.h>  // Include FreeRTOS for Arduino
-
-// const int trigPin = A0; // TRIG pin (using analog pin A0)
-// const int echoPin = A1; // ECHO pin (using analog pin A1)
-
-// // A simple helper function as in the original code
-// int myFunction(int x, int y) {
-//   return x + y;
-// }
-
-// // Task to handle the ultrasonic sensor reading and LED control
-// void SensorTask(void *pvParameters) {
-//   (void) pvParameters;
-//   // Demonstrate the use of myFunction (result unused)
-//   int result = myFunction(2, 3);
-  
-//   for (;;) {
-//     // Trigger the ultrasonic sensor:
-//     digitalWrite(trigPin, LOW);
-//     delayMicroseconds(2);
-//     digitalWrite(trigPin, HIGH);
-//     delayMicroseconds(10);
-//     digitalWrite(trigPin, LOW);
-    
-//     // Measure the echo pulse duration:
-//     long duration = pulseIn(echoPin, HIGH);
-    
-//     // Calculate the distance (in cm):
-//     long distance = (duration * 0.034) / 2;
-    
-//     // Turn the LED on if an object is closer than 10cm:
-//     if (distance < 10) {
-//       digitalWrite(LED_BUILTIN, HIGH);
-//     } else {
-//       digitalWrite(LED_BUILTIN, LOW);
-//     }
-    
-//     // Wait 500ms before the next measurement using FreeRTOS delay:
-//     vTaskDelay(500 / portTICK_PERIOD_MS);
-//   }
-// }
-
-// void setup() {
-//   // Initialize the pins:
-//   pinMode(trigPin, OUTPUT);
-//   pinMode(echoPin, INPUT);
-//   pinMode(LED_BUILTIN, OUTPUT);
-
-//   // Create the sensor task:
-//   xTaskCreate(
-//     SensorTask,      // Task function
-//     "SensorTask",    // Name of the task
-//     128,             // Stack size (in words)
-//     NULL,            // Task parameter (none in this case)
-//     1,               // Priority
-//     NULL             // Task handle
-//   );
-
-//   // Start the scheduler so that tasks begin executing:
-//   vTaskStartScheduler();
-// }
-
-// void loop() {
-//   // The loop remains empty 1as FreeRTOS tasks manage the program execution.
-// }
-
-
 #include <Arduino.h>
-#include <Arduino_FreeRTOS.h>
 #include <LiquidCrystal.h>
+#include <Arduino_FreeRTOS.h>
+#include <semphr.h>
 
-// HC-SR04 Pins
-const int trigPin = A0;
-const int echoPin = A1;
+// --- Pin Definitions ---
+#define TRIGGER_PIN A0
+#define ECHO_PIN    A1
 
+// --- Constants ---
+#define DISTANCE_THRESHOLD_CM 20
 
 // LCD Pins (connected in 4-bit mode)
 const int rs = 0, en = 1, d4 = 4, d5 = 5, d6 = 6, d7 = 7;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
-// Shared distance variable
-volatile long distance = 0;
+// --- Shared Variables ---
+volatile uint16_t current_distance_cm = 0;
+SemaphoreHandle_t distanceMutex;
 
-// Task handles (optional)
-TaskHandle_t TaskMeasure, TaskDisplay, TaskWrite;
+volatile bool ledState = false;  // false = OFF, true = ON
+SemaphoreHandle_t ledMutex;
 
+TaskHandle_t AlertTaskHandle = NULL; // LED task handle for notifications
 
-// Task 1: Measure Distance
-void measureDistanceTask(void *pvParameters) {
-  while (1) {
+// --- Function Declarations ---
+void SensorTask(void *pvParameters);
+void DisplayTask(void *pvParameters);
+void AlertTask(void *pvParameters);
 
-    if (distance < 10) {
-      digitalWrite(LED_BUILTIN, HIGH);
-    } else {
-      digitalWrite(LED_BUILTIN, LOW);
-    }
-
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-  }
+// --- Utility Functions ---
+void triggerUltrasonic() {
+  digitalWrite(TRIGGER_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIGGER_PIN, LOW);
 }
 
-// Task 2: Display Distance
-void displayDistanceTask(void *pvParameters) {
-  char buf[16];
-  while (1) {
-    lcd.setCursor(0, 1); // Second line
-    snprintf(buf, sizeof(buf), "Dist: %3ld cm", distance);
-    lcd.print(buf);
-    vTaskDelay(50 / portTICK_PERIOD_MS);
-  }
-}
+uint16_t measureDistanceCM() {
+  triggerUltrasonic();
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH);
 
-// Task 3: Write Distance
-void writeDistanceTask(void *pvParameters) {
-  while (1) {
-    digitalWrite(trigPin, LOW);
-    vTaskDelay(2 / portTICK_PERIOD_MS);
-    digitalWrite(trigPin, HIGH);
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-    digitalWrite(trigPin, LOW);
-
-    long duration = pulseIn(echoPin, HIGH);
-    distance = (duration * 0.034) / 2 + 1; // sai so
-
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-  }
+  uint16_t distance_cm = duration / 58;
+  return distance_cm;
 }
 
 void setup() {
-  // Init pins
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  // Serial.begin(9600);
+
+  pinMode(TRIGGER_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  // Init LCD
   lcd.begin(16, 2);
-  lcd.print("Distance:");
+  lcd.print("Starting...");
 
-  // Create FreeRTOS tasks
-  xTaskCreate(measureDistanceTask, "Measure", 128, NULL, 2, &TaskMeasure);
-  xTaskCreate(displayDistanceTask, "Display", 128, NULL, 1, &TaskDisplay);
-  xTaskCreate(writeDistanceTask, "Write", 128, NULL, 1, &TaskWrite);
+  // Create Mutexes
+  distanceMutex = xSemaphoreCreateMutex();
+  ledMutex = xSemaphoreCreateMutex();
 
+  // Create tasks
+  xTaskCreate(SensorTask, "Sensor", 128, NULL, 1, NULL);
+  xTaskCreate(AlertTask, "Alert", 128, NULL, 2, &AlertTaskHandle);
+  xTaskCreate(DisplayTask, "Display", 128, NULL, 1, NULL);
+
+  // Start FreeRTOS scheduler
   vTaskStartScheduler();
 }
 
 void loop() {
-  // Not used in FreeRTOS
 }
 
+// --- Tasks Implementation ---
+void SensorTask(void *pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(100); // 100ms loop
 
+  for (;;) {
+    uint16_t distance = measureDistanceCM();
+
+    if (xSemaphoreTake(distanceMutex, portMAX_DELAY)) {
+      current_distance_cm = distance;
+      xSemaphoreGive(distanceMutex);
+    }
+
+    bool desiredLedState = (distance <= DISTANCE_THRESHOLD_CM);
+
+    if (xSemaphoreTake(ledMutex, portMAX_DELAY)) {
+      if (desiredLedState != ledState) {
+        ledState = desiredLedState;
+        xTaskNotifyGive(AlertTaskHandle); // Notify LED task only if needed
+      }
+      xSemaphoreGive(ledMutex);
+    }
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
+
+void AlertTask(void *pvParameters) {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // Wait for notification
+
+    bool localLedState;
+
+    if (xSemaphoreTake(ledMutex, portMAX_DELAY)) {
+      localLedState = ledState;
+      xSemaphoreGive(ledMutex);
+    }
+
+    digitalWrite(LED_BUILTIN, localLedState ? HIGH : LOW);
+  }
+}
+
+void DisplayTask(void *pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(200); // 200ms update
+
+  for (;;) {
+    uint16_t distance_copy;
+
+    if (xSemaphoreTake(distanceMutex, portMAX_DELAY)) {
+      distance_copy = current_distance_cm;
+      xSemaphoreGive(distanceMutex);
+    }
+
+    // lcd.clear();
+    lcd.setCursor(0, 0);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "Dist: %3d cm", distance_copy);
+    lcd.print(buf);
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
